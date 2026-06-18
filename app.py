@@ -19,23 +19,38 @@ st.set_page_config(
 # Earth Engine Authentication
 # ----------------------------
 
+import streamlit as st
+import ee
+
+
 try:
+
+    private_key = st.secrets["earthengine"]["private_key"]
+
+    st.write("Email found:", st.secrets["earthengine"]["client_email"])
+    st.write("Key starts:", private_key[:30])
+
 
     credentials = ee.ServiceAccountCredentials(
         st.secrets["earthengine"]["client_email"],
-        key_data=st.secrets["earthengine"]["private_key"]
+        key_data=private_key.replace("\\n", "\n")
     )
+
 
     ee.Initialize(
         credentials,
         project=st.secrets["earthengine"]["project_id"]
     )
 
+
+    st.success("Earth Engine Connected ✅")
+
+
 except Exception as e:
 
-    st.error("Earth Engine authentication failed")
+    st.error("Auth failed")
+    st.exception(e)
     st.stop()
-
 
 
 # ----------------------------
