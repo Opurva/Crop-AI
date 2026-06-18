@@ -2,7 +2,7 @@ import streamlit as st
 import ee
 import pandas as pd
 from datetime import datetime, timedelta
-import geemap.foliumap as geemap
+import geemap
 from streamlit_folium import st_folium
 
 from model import predict_crop
@@ -46,20 +46,17 @@ crop_type = st.sidebar.selectbox("Crop Type", ["Wheat", "Rice", "Maize", "Cotton
 # ----------------------------
 # MAP (FIXED WORKING VERSION)
 # ----------------------------
-st.subheader("🛰 Draw Your Farm Boundary")
+import geemap
 
-m = geemap.Map(center=[20.59, 78.96], zoom=5)
+m = geemap.Map()
 m.add_draw_control()
 
-output = st_folium(m, height=500)
+m.to_streamlit(height=500)
 
-roi = None
-
-if output and "all_drawings" in output and len(output["all_drawings"]) > 0:
-    roi = geemap.geojson_to_ee(output["all_drawings"][-1]["geometry"])
+roi = m.user_roi
 
 if roi is None:
-    st.warning("👉 Farm boundary draw karo (polygon tool use karo)")
+    st.warning("Draw farm boundary first")
     st.stop()
 
 # ----------------------------
