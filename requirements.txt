@@ -1,8 +1,8 @@
-streamlit
+streamlit==1.32.0
 earthengine-api
 geemap==0.32.0
 streamlit-folium
 folium
 pandas
 numpy
-box==7.3.0
+scikit-learn
