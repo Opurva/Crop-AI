@@ -9,12 +9,6 @@ from model import predict_crop
 # ------------------
 # Earth Engine
 # ------------------
-
-import json
-import streamlit as st
-import ee
-
-
 credentials = ee.ServiceAccountCredentials(
     st.secrets["earthengine"]["client_email"],
     key_data=st.secrets["earthengine"]["private_key"]
