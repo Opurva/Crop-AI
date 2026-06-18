@@ -10,14 +10,20 @@ from model import predict_crop
 # Earth Engine
 # ------------------
 
-try:
-    ee.Initialize()
-
-except:
-    ee.Authenticate()
-    ee.Initialize()
+import json
+import streamlit as st
+import ee
 
 
+credentials = ee.ServiceAccountCredentials(
+    st.secrets["earthengine"]["client_email"],
+    key_data=st.secrets["earthengine"]["private_key"]
+)
+
+ee.Initialize(
+    credentials,
+    project="cropai-isro-hackathon"
+)
 
 st.set_page_config(
     page_title="Crop AI",
