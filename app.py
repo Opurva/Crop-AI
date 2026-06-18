@@ -1,372 +1,254 @@
 import streamlit as st
 import ee
 import geemap
+import pandas as pd
+import numpy as np
+from datetime import datetime, timedelta
 
 from model import predict_crop
 
-
 # ----------------------------
-# Page config
+# PAGE CONFIG
 # ----------------------------
-
 st.set_page_config(
-    page_title="Crop AI Monitoring",
+    page_title="AI Crop Intelligence System",
     layout="wide"
 )
 
+st.title("🌾 AI Crop Intelligence System (Advanced)")
+
+st.write("Satellite + AI powered crop monitoring with multi-index analysis")
 
 # ----------------------------
-# Earth Engine Authentication
+# AUTH
 # ----------------------------
-
-import streamlit as st
-import ee
-
-
 try:
-
     private_key = st.secrets["earthengine"]["private_key"]
-
-    st.write("Email found:", st.secrets["earthengine"]["client_email"])
-    st.write("Key starts:", private_key[:30])
-
 
     credentials = ee.ServiceAccountCredentials(
         st.secrets["earthengine"]["client_email"],
         key_data=private_key.replace("\\n", "\n")
     )
 
-
     ee.Initialize(
         credentials,
         project=st.secrets["earthengine"]["project_id"]
     )
 
-
     st.success("Earth Engine Connected ✅")
 
-
 except Exception as e:
-
     st.error("Auth failed")
     st.exception(e)
     st.stop()
 
-
 # ----------------------------
-# Title
+# SIDEBAR
 # ----------------------------
+st.sidebar.header("👨‍🌾 Farmer Info")
 
-st.title("🌾 Crop AI Monitoring System")
-
-st.write(
-    "Satellite based crop health monitoring using AI + Google Earth Engine"
+farmer = st.sidebar.text_input("Farmer Name", "Farmer")
+crop_type = st.sidebar.selectbox(
+    "Crop Type",
+    ["Wheat", "Rice", "Maize", "Sugarcane", "Cotton"]
 )
 
-
-
 # ----------------------------
-# Farmer details
+# MAP
 # ----------------------------
+st.subheader("🛰 Draw Farm Boundary")
 
-st.sidebar.header("👨‍🌾 Farmer Details")
+m = geemap.Map(center=[20.59, 78.96], zoom=5)
+m.add_draw_control()
+m.to_streamlit(height=500)
 
-
-farmer = st.sidebar.text_input(
-    "Farmer Name",
-    "Farmer"
-)
-
-
-
-# ----------------------------
-# Map
-# ----------------------------
-
-st.subheader("🛰 Select Farm Area")
-
-
-Map = geemap.Map(
-    center=[20.59,78.96],
-    zoom=5
-)
-
-
-Map.add_draw_control()
-
-
-Map.to_streamlit(
-    height=500
-)
-
-
-
-roi = Map.user_roi
-
-
+roi = m.user_roi
 
 if roi is None:
-
-    st.warning(
-        "Draw your farm boundary on the map first"
-    )
-
+    st.warning("Draw farm boundary first")
     st.stop()
 
+# ----------------------------
+# SENTINEL DATA
+# ----------------------------
+start_date = (datetime.today() - timedelta(days=90)).strftime("%Y-%m-%d")
+end_date = datetime.today().strftime("%Y-%m-%d")
 
+collection = (
+    ee.ImageCollection("COPERNICUS/S2_SR_HARMONIZED")
+    .filterBounds(roi)
+    .filterDate(start_date, end_date)
+    .filter(ee.Filter.lt("CLOUDY_PIXEL_PERCENTAGE", 20))
+)
+
+image = collection.median().clip(roi)
 
 # ----------------------------
-# Satellite Image
+# INDICES (ADVANCED)
 # ----------------------------
 
-
-try:
-
-    collection = (
-        ee.ImageCollection(
-            "COPERNICUS/S2_SR_HARMONIZED"
-        )
-        .filterBounds(roi)
-        .filterDate(
-            "2025-06-01",
-            "2025-10-01"
-        )
-        .filter(
-            ee.Filter.lt(
-                "CLOUDY_PIXEL_PERCENTAGE",
-                20
-            )
-        )
-    )
-
-
-    image = (
-        collection
-        .median()
-        .clip(roi)
-    )
-
-
-except:
-
-    st.error(
-        "Satellite image not found"
-    )
-
-    st.stop()
-
-
-
-# ----------------------------
 # NDVI
-# ----------------------------
+ndvi = image.normalizedDifference(["B8", "B4"]).rename("NDVI")
 
-ndvi = image.normalizedDifference(
-    ["B8","B4"]
-)
-
-
-ndvi_data = (
-    ndvi.reduceRegion(
-        ee.Reducer.mean(),
-        roi,
-        10
-    )
-    .getInfo()
-)
-
-
-ndvi_value = ndvi_data.get(
-    "nd",
-    0
-)
-
-
-
-# ----------------------------
 # NDWI
-# ----------------------------
+ndwi = image.normalizedDifference(["B3", "B8"]).rename("NDWI")
 
-ndwi = image.normalizedDifference(
-    ["B3","B8"]
-)
+# EVI
+evi = image.expression(
+    "2.5 * ((NIR - RED) / (NIR + 6*RED - 7.5*BLUE + 1))",
+    {
+        "NIR": image.select("B8"),
+        "RED": image.select("B4"),
+        "BLUE": image.select("B2")
+    }
+).rename("EVI")
 
-
-ndwi_data = (
-    ndwi.reduceRegion(
-        ee.Reducer.mean(),
-        roi,
-        10
-    )
-    .getInfo()
-)
-
-
-ndwi_value = ndwi_data.get(
-    "nd",
-    0
-)
-
-
+# SAVI
+savi = image.expression(
+    "((NIR - RED) / (NIR + RED + 0.5)) * 1.5",
+    {
+        "NIR": image.select("B8"),
+        "RED": image.select("B4")
+    }
+).rename("SAVI")
 
 # ----------------------------
-# Temperature
+# LAND SURFACE TEMP (LST)
 # ----------------------------
-
 try:
-
     landsat = (
-        ee.ImageCollection(
-            "LANDSAT/LC08/C02/T1_L2"
-        )
+        ee.ImageCollection("LANDSAT/LC08/C02/T1_L2")
         .filterBounds(roi)
-        .filterDate(
-            "2025-06-01",
-            "2025-10-01"
-        )
+        .filterDate(start_date, end_date)
         .median()
     )
 
-
-    temp_img = (
-        landsat
-        .select("ST_B10")
-        .multiply(0.00341802)
-        .add(149)
-    )
-
-
-    temp_data = (
-        temp_img.reduceRegion(
-            ee.Reducer.mean(),
-            roi,
-            30
-        )
-        .getInfo()
-    )
-
-
-    temperature = (
-        list(temp_data.values())[0]
-        if temp_data
-        else 30
-    )
-
+    lst = landsat.select("ST_B10")
+    lst = lst.multiply(0.00341802).add(149).rename("LST")
 
 except:
-
-    temperature = 30
-
-
+    lst = ee.Image.constant(30).rename("LST")
 
 # ----------------------------
-# AI Prediction
+# STACK FEATURES
 # ----------------------------
+stack = ndvi.addBands([ndwi, evi, savi, lst])
 
+# ----------------------------
+# REGION STATS
+# ----------------------------
+stats = stack.reduceRegion(
+    reducer=ee.Reducer.mean(),
+    geometry=roi,
+    scale=10
+).getInfo()
+
+ndvi_val = stats.get("NDVI", 0)
+ndwi_val = stats.get("NDWI", 0)
+evi_val = stats.get("EVI", 0)
+savi_val = stats.get("SAVI", 0)
+temp_val = stats.get("LST", 30)
+
+# ----------------------------
+# ML PREDICTION
+# ----------------------------
 prediction = predict_crop(
-    float(ndvi_value),
-    float(ndwi_value),
-    float(temperature)
+    float(ndvi_val),
+    float(ndwi_val),
+    float(temp_val)
 )
-
-
 
 # ----------------------------
-# Dashboard
+# ADVANCED RISK SCORING
 # ----------------------------
+water_risk = "High" if ndwi_val < 0 else "Low"
+heat_risk = "High" if temp_val > 38 else "Low"
+veg_health = "Good" if ndvi_val > 0.5 else "Poor"
 
+# ----------------------------
+# DASHBOARD
+# ----------------------------
+st.subheader("📊 Multi-Spectral Analysis")
 
-st.subheader("📊 Farm Analysis")
+col1, col2, col3, col4, col5 = st.columns(5)
 
+col1.metric("NDVI", round(ndvi_val, 3))
+col2.metric("NDWI", round(ndwi_val, 3))
+col3.metric("EVI", round(evi_val, 3))
+col4.metric("SAVI", round(savi_val, 3))
+col5.metric("LST", round(temp_val, 2))
 
-a,b,c = st.columns(3)
+# ----------------------------
+# AI OUTPUT
+# ----------------------------
+st.subheader("🤖 AI Crop Intelligence")
 
-
-a.metric(
-    "NDVI",
-    round(ndvi_value,3)
-)
-
-
-b.metric(
-    "NDWI",
-    round(ndwi_value,3)
-)
-
-
-c.metric(
-    "Temperature",
-    round(temperature,2)
-)
-
-
-
-st.subheader("🤖 AI Crop Health")
-
+st.write("### Crop Prediction:", prediction)
 
 if prediction == "Healthy":
-
-    st.success(
-        "Healthy Crop 🟢"
-    )
-
-
+    st.success("Crop is Healthy 🟢")
 elif prediction == "Medium":
-
-    st.warning(
-        "Medium Crop 🟡"
-    )
-
-
+    st.warning("Crop is Moderate 🟡")
 else:
-
-    st.error(
-        "Poor Crop 🔴"
-    )
-
-
+    st.error("Crop is Stressed 🔴")
 
 # ----------------------------
-# Recommendation
+# RISK ENGINE
 # ----------------------------
+st.subheader("⚠ Risk Analysis Engine")
 
+st.write("💧 Water Stress:", water_risk)
+st.write("🌡 Heat Stress:", heat_risk)
+st.write("🌱 Vegetation Health:", veg_health)
 
-st.subheader("📌 Recommendation")
+# ----------------------------
+# SMART RECOMMENDATION ENGINE
+# ----------------------------
+st.subheader("📌 AI Recommendations")
 
+if ndwi_val < 0:
+    st.write("💧 Irrigation needed immediately (Water stress detected)")
 
-if ndwi_value < 0:
+if temp_val > 38:
+    st.write("🌡 Heat protection required (mulching/shade suggested)")
 
-    st.write(
-        "💧 Water stress detected. Irrigation suggested."
-    )
+if ndvi_val < 0.3:
+    st.write("🌱 Crop growth is weak, consider fertilizer optimization")
 
-else:
+if ndvi_val > 0.6:
+    st.write("🌾 Good vegetation health, maintain current practices")
 
-    st.write(
-        "✅ Water condition looks good."
-    )
+# ----------------------------
+# ML FEATURE VECTOR EXPORT
+# ----------------------------
+st.subheader("📦 ML Feature Vector")
 
+feature_df = pd.DataFrame([{
+    "NDVI": ndvi_val,
+    "NDWI": ndwi_val,
+    "EVI": evi_val,
+    "SAVI": savi_val,
+    "LST": temp_val,
+    "Prediction": prediction
+}])
 
-if temperature > 40:
+st.dataframe(feature_df)
 
-    st.write(
-        "🌡 High temperature stress detected."
-    )
+csv = feature_df.to_csv(index=False).encode("utf-8")
 
-else:
-
-    st.write(
-        "🌡 Temperature is normal."
-    )
-
-
-
-st.info(
-f"""
-Farmer : {farmer}
-
-Crop Status : {prediction}
-
-Analysis generated from Sentinel-2 satellite data.
-"""
+st.download_button(
+    "⬇ Download Dataset",
+    csv,
+    "crop_features.csv",
+    "text/csv"
 )
+
+# ----------------------------
+# FOOTER
+# ----------------------------
+st.info(f"""
+Farmer: {farmer}
+Crop: {crop_type}
+AI System: Advanced Multi-Spectral + ML Hybrid Model
+Generated: {datetime.now()}
+""")
