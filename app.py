@@ -1,26 +1,20 @@
 import streamlit as st
 import ee
-import geemap
 import pandas as pd
-import numpy as np
 from datetime import datetime, timedelta
+import geemap.foliumap as geemap
+from streamlit_folium import st_folium
 
 from model import predict_crop
 
 # ----------------------------
 # PAGE CONFIG
 # ----------------------------
-st.set_page_config(
-    page_title="AI Crop Intelligence System",
-    layout="wide"
-)
-
+st.set_page_config(page_title="AI Crop Intelligence", layout="wide")
 st.title("🌾 AI Crop Intelligence System (Advanced)")
 
-st.write("Satellite + AI powered crop monitoring with multi-index analysis")
-
 # ----------------------------
-# AUTH
+# EARTH ENGINE AUTH
 # ----------------------------
 try:
     private_key = st.secrets["earthengine"]["private_key"]
@@ -38,7 +32,7 @@ try:
     st.success("Earth Engine Connected ✅")
 
 except Exception as e:
-    st.error("Auth failed")
+    st.error("Auth Failed")
     st.exception(e)
     st.stop()
 
@@ -46,54 +40,55 @@ except Exception as e:
 # SIDEBAR
 # ----------------------------
 st.sidebar.header("👨‍🌾 Farmer Info")
-
 farmer = st.sidebar.text_input("Farmer Name", "Farmer")
-crop_type = st.sidebar.selectbox(
-    "Crop Type",
-    ["Wheat", "Rice", "Maize", "Sugarcane", "Cotton"]
-)
+crop_type = st.sidebar.selectbox("Crop Type", ["Wheat", "Rice", "Maize", "Cotton", "Sugarcane"])
 
 # ----------------------------
-# MAP
+# MAP (FIXED WORKING VERSION)
 # ----------------------------
-st.subheader("🛰 Draw Farm Boundary")
+st.subheader("🛰 Draw Your Farm Boundary")
 
 m = geemap.Map(center=[20.59, 78.96], zoom=5)
 m.add_draw_control()
-m.to_streamlit(height=500)
 
-roi = m.user_roi
+output = st_folium(m, height=500)
+
+roi = None
+
+if output and "all_drawings" in output and len(output["all_drawings"]) > 0:
+    roi = geemap.geojson_to_ee(output["all_drawings"][-1]["geometry"])
 
 if roi is None:
-    st.warning("Draw farm boundary first")
+    st.warning("👉 Farm boundary draw karo (polygon tool use karo)")
     st.stop()
 
 # ----------------------------
-# SENTINEL DATA
+# DATE RANGE
 # ----------------------------
-start_date = (datetime.today() - timedelta(days=90)).strftime("%Y-%m-%d")
-end_date = datetime.today().strftime("%Y-%m-%d")
+end_date = datetime.today()
+start_date = end_date - timedelta(days=90)
 
+start = start_date.strftime("%Y-%m-%d")
+end = end_date.strftime("%Y-%m-%d")
+
+# ----------------------------
+# SENTINEL IMAGE
+# ----------------------------
 collection = (
     ee.ImageCollection("COPERNICUS/S2_SR_HARMONIZED")
     .filterBounds(roi)
-    .filterDate(start_date, end_date)
+    .filterDate(start, end)
     .filter(ee.Filter.lt("CLOUDY_PIXEL_PERCENTAGE", 20))
 )
 
 image = collection.median().clip(roi)
 
 # ----------------------------
-# INDICES (ADVANCED)
+# INDICES
 # ----------------------------
-
-# NDVI
 ndvi = image.normalizedDifference(["B8", "B4"]).rename("NDVI")
-
-# NDWI
 ndwi = image.normalizedDifference(["B3", "B8"]).rename("NDWI")
 
-# EVI
 evi = image.expression(
     "2.5 * ((NIR - RED) / (NIR + 6*RED - 7.5*BLUE + 1))",
     {
@@ -103,7 +98,6 @@ evi = image.expression(
     }
 ).rename("EVI")
 
-# SAVI
 savi = image.expression(
     "((NIR - RED) / (NIR + RED + 0.5)) * 1.5",
     {
@@ -113,13 +107,13 @@ savi = image.expression(
 ).rename("SAVI")
 
 # ----------------------------
-# LAND SURFACE TEMP (LST)
+# TEMPERATURE (LST)
 # ----------------------------
 try:
     landsat = (
         ee.ImageCollection("LANDSAT/LC08/C02/T1_L2")
         .filterBounds(roi)
-        .filterDate(start_date, end_date)
+        .filterDate(start, end)
         .median()
     )
 
@@ -130,116 +124,113 @@ except:
     lst = ee.Image.constant(30).rename("LST")
 
 # ----------------------------
-# STACK FEATURES
+# STACK
 # ----------------------------
 stack = ndvi.addBands([ndwi, evi, savi, lst])
 
-# ----------------------------
-# REGION STATS
-# ----------------------------
 stats = stack.reduceRegion(
     reducer=ee.Reducer.mean(),
     geometry=roi,
     scale=10
 ).getInfo()
 
-ndvi_val = stats.get("NDVI", 0)
-ndwi_val = stats.get("NDWI", 0)
-evi_val = stats.get("EVI", 0)
-savi_val = stats.get("SAVI", 0)
-temp_val = stats.get("LST", 30)
+ndvi_v = stats.get("NDVI", 0)
+ndwi_v = stats.get("NDWI", 0)
+evi_v = stats.get("EVI", 0)
+savi_v = stats.get("SAVI", 0)
+lst_v = stats.get("LST", 30)
 
 # ----------------------------
 # ML PREDICTION
 # ----------------------------
 prediction = predict_crop(
-    float(ndvi_val),
-    float(ndwi_val),
-    float(temp_val)
+    float(ndvi_v),
+    float(ndwi_v),
+    float(lst_v)
 )
-
-# ----------------------------
-# ADVANCED RISK SCORING
-# ----------------------------
-water_risk = "High" if ndwi_val < 0 else "Low"
-heat_risk = "High" if temp_val > 38 else "Low"
-veg_health = "Good" if ndvi_val > 0.5 else "Poor"
-
-# ----------------------------
-# DASHBOARD
-# ----------------------------
-st.subheader("📊 Multi-Spectral Analysis")
-
-col1, col2, col3, col4, col5 = st.columns(5)
-
-col1.metric("NDVI", round(ndvi_val, 3))
-col2.metric("NDWI", round(ndwi_val, 3))
-col3.metric("EVI", round(evi_val, 3))
-col4.metric("SAVI", round(savi_val, 3))
-col5.metric("LST", round(temp_val, 2))
-
-# ----------------------------
-# AI OUTPUT
-# ----------------------------
-st.subheader("🤖 AI Crop Intelligence")
-
-st.write("### Crop Prediction:", prediction)
-
-if prediction == "Healthy":
-    st.success("Crop is Healthy 🟢")
-elif prediction == "Medium":
-    st.warning("Crop is Moderate 🟡")
-else:
-    st.error("Crop is Stressed 🔴")
 
 # ----------------------------
 # RISK ENGINE
 # ----------------------------
-st.subheader("⚠ Risk Analysis Engine")
-
-st.write("💧 Water Stress:", water_risk)
-st.write("🌡 Heat Stress:", heat_risk)
-st.write("🌱 Vegetation Health:", veg_health)
+water_risk = "HIGH" if ndwi_v < 0 else "LOW"
+heat_risk = "HIGH" if lst_v > 38 else "LOW"
+veg_health = "GOOD" if ndvi_v > 0.5 else "POOR"
 
 # ----------------------------
-# SMART RECOMMENDATION ENGINE
+# DASHBOARD
 # ----------------------------
-st.subheader("📌 AI Recommendations")
+st.subheader("📊 Farm Analytics")
 
-if ndwi_val < 0:
-    st.write("💧 Irrigation needed immediately (Water stress detected)")
+c1, c2, c3, c4, c5 = st.columns(5)
 
-if temp_val > 38:
-    st.write("🌡 Heat protection required (mulching/shade suggested)")
-
-if ndvi_val < 0.3:
-    st.write("🌱 Crop growth is weak, consider fertilizer optimization")
-
-if ndvi_val > 0.6:
-    st.write("🌾 Good vegetation health, maintain current practices")
+c1.metric("NDVI", round(ndvi_v, 3))
+c2.metric("NDWI", round(ndwi_v, 3))
+c3.metric("EVI", round(evi_v, 3))
+c4.metric("SAVI", round(savi_v, 3))
+c5.metric("LST", round(lst_v, 2))
 
 # ----------------------------
-# ML FEATURE VECTOR EXPORT
+# AI RESULT
 # ----------------------------
-st.subheader("📦 ML Feature Vector")
+st.subheader("🤖 AI Prediction")
 
-feature_df = pd.DataFrame([{
-    "NDVI": ndvi_val,
-    "NDWI": ndwi_val,
-    "EVI": evi_val,
-    "SAVI": savi_val,
-    "LST": temp_val,
+st.write("Crop Status:", prediction)
+
+if prediction == "Healthy":
+    st.success("Healthy Crop 🟢")
+elif prediction == "Medium":
+    st.warning("Moderate Crop 🟡")
+else:
+    st.error("Stressed Crop 🔴")
+
+# ----------------------------
+# RISK ANALYSIS
+# ----------------------------
+st.subheader("⚠ Risk Analysis")
+
+st.write("💧 Water Risk:", water_risk)
+st.write("🌡 Heat Risk:", heat_risk)
+st.write("🌱 Vegetation:", veg_health)
+
+# ----------------------------
+# RECOMMENDATION ENGINE
+# ----------------------------
+st.subheader("📌 Recommendations")
+
+if ndwi_v < 0:
+    st.write("💧 Irrigation needed immediately")
+
+if lst_v > 38:
+    st.write("🌡 Heat stress protection required")
+
+if ndvi_v < 0.3:
+    st.write("🌱 Crop growth weak — fertilizer needed")
+
+if ndvi_v > 0.6:
+    st.write("🌾 Crop condition good")
+
+# ----------------------------
+# EXPORT DATASET
+# ----------------------------
+st.subheader("📦 Export Features")
+
+df = pd.DataFrame([{
+    "NDVI": ndvi_v,
+    "NDWI": ndwi_v,
+    "EVI": evi_v,
+    "SAVI": savi_v,
+    "LST": lst_v,
     "Prediction": prediction
 }])
 
-st.dataframe(feature_df)
+st.dataframe(df)
 
-csv = feature_df.to_csv(index=False).encode("utf-8")
+csv = df.to_csv(index=False).encode("utf-8")
 
 st.download_button(
-    "⬇ Download Dataset",
+    "⬇ Download Data",
     csv,
-    "crop_features.csv",
+    "crop_ai_data.csv",
     "text/csv"
 )
 
@@ -249,6 +240,6 @@ st.download_button(
 st.info(f"""
 Farmer: {farmer}
 Crop: {crop_type}
-AI System: Advanced Multi-Spectral + ML Hybrid Model
+System: Advanced AI + Satellite Intelligence
 Generated: {datetime.now()}
 """)
